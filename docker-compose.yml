@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ozaki-rsv-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ozaki
+      POSTGRES_PASSWORD: ozaki_dev_password
+      POSTGRES_DB: ozaki_rsv
+      TZ: Asia/Tokyo
+      PGTZ: Asia/Tokyo
+    ports:
+      - "5432:5432"
+    volumes:
+      - ozaki-rsv-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ozaki -d ozaki_rsv"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ozaki-rsv-db-data:
