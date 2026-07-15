@@ -168,68 +168,73 @@ export default function StepDateTime({
         </button>
       </div>
 
-      {/* タイムテーブル(行=日付、列=時間) */}
+      {/* タイムテーブル(行=時間、列=日付) */}
       <div className="overflow-x-auto rounded-lg border border-zinc-200">
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr className="bg-zinc-50">
               <th className="sticky left-0 z-10 bg-zinc-50 px-2 py-2 text-left font-medium text-zinc-500">
-                日付
+                時刻
               </th>
-              {times.map((t) => (
-                <th key={t} className="whitespace-nowrap px-1.5 py-2 text-center font-medium text-zinc-500">
-                  {t}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {pageDays.map((day) => {
-              const [, mm, dd] = day.date.split("-");
-              const isSunday = day.weekday === 0;
-              const isSaturday = day.weekday === 6;
-              return (
-                <tr key={day.date} className="border-t border-zinc-100">
+              {pageDays.map((day) => {
+                const [, mm, dd] = day.date.split("-");
+                const isSunday = day.weekday === 0;
+                const isSaturday = day.weekday === 6;
+                return (
                   <th
-                    scope="row"
-                    className={`sticky left-0 z-10 whitespace-nowrap bg-white px-2 py-1.5 text-left font-medium ${
+                    key={day.date}
+                    className={`whitespace-nowrap px-1.5 py-2 text-center font-medium ${
                       day.isPublicHoliday || isSunday
                         ? "text-red-500"
                         : isSaturday
                           ? "text-blue-500"
-                          : "text-zinc-800"
+                          : "text-zinc-500"
                     }`}
                   >
                     {Number(mm)}/{Number(dd)}（{WEEKDAY_LABELS[day.weekday]}）
                   </th>
-                  {day.slots.map((slot) => {
-                    const meta = STATUS_META[slot.status];
-                    const disabled = slot.status === "UNAVAILABLE";
-                    const active = selectedDate === day.date && selectedTime === slot.time;
-                    return (
-                      <td key={slot.time} className="p-0.5 text-center">
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => handleSelect(day.date, slot.time, slot.status)}
-                          aria-pressed={active}
-                          aria-label={`${Number(mm)}/${Number(dd)} ${slot.time} ${meta.label}`}
-                          className={`flex h-8 w-8 items-center justify-center rounded transition ${
-                            active
-                              ? "bg-emerald-100 ring-2 ring-emerald-500"
-                              : disabled
-                                ? "cursor-not-allowed"
-                                : "hover:bg-emerald-50"
-                          }`}
-                        >
-                          <span className={`text-base leading-none ${meta.className}`}>{meta.symbol}</span>
-                        </button>
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
-            })}
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {times.map((t, i) => (
+              <tr key={t} className="border-t border-zinc-100">
+                <th
+                  scope="row"
+                  className="sticky left-0 z-10 whitespace-nowrap bg-white px-2 py-1.5 text-left font-medium text-zinc-800"
+                >
+                  {t}
+                </th>
+                {pageDays.map((day) => {
+                  const slot = day.slots[i];
+                  const meta = STATUS_META[slot.status];
+                  const disabled = slot.status === "UNAVAILABLE";
+                  const active = selectedDate === day.date && selectedTime === slot.time;
+                  const [, mm, dd] = day.date.split("-");
+                  return (
+                    <td key={day.date} className="p-0.5 text-center">
+                      <button
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => handleSelect(day.date, slot.time, slot.status)}
+                        aria-pressed={active}
+                        aria-label={`${Number(mm)}/${Number(dd)} ${slot.time} ${meta.label}`}
+                        className={`flex h-8 w-8 items-center justify-center rounded transition ${
+                          active
+                            ? "bg-emerald-100 ring-2 ring-emerald-500"
+                            : disabled
+                              ? "cursor-not-allowed"
+                              : "hover:bg-emerald-50"
+                        }`}
+                      >
+                        <span className={`text-base leading-none ${meta.className}`}>{meta.symbol}</span>
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
