@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -18,8 +18,16 @@ export default function CompleteView() {
   const router = useRouter();
   const [result, setResult] = useState<CreateReservationResponse | null>(null);
   const [checked, setChecked] = useState(false);
+  // React Strict Mode(開発時)はマウント直後にeffectを2回実行するため、
+  // 「読み取って即クリア」を1回のeffectに書くと2回目の実行で結果が消えており
+  // 誤って /reserve へリダイレクトしてしまう。ref で初回実行済みかどうかを
+  // 判定し、クリアは初回の実行でのみ行う。
+  const hasRunRef = useRef(false);
 
   useEffect(() => {
+    if (hasRunRef.current) return;
+    hasRunRef.current = true;
+
     const r = loadResult();
     if (!r) {
       // 結果が無い(直接アクセス/リロード後の二重表示)場合は予約トップへ

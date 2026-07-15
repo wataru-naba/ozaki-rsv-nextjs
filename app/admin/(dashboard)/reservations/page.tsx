@@ -96,7 +96,9 @@ export default async function ReservationsPage({
                       {formatJstTime(r.startAt)}–{formatJstTime(r.endAt)}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2.5 text-zinc-800">{r.name}</td>
-                    <td className="px-4 py-2.5 text-zinc-600">{reservationTypeLabel(r.typeId)}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-zinc-600">
+                      {reservationTypeLabel(r.typeId)}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-2.5 text-zinc-600">
                       {r.durationMinutes}分
                     </td>
