@@ -26,9 +26,13 @@ const STATUS_META: Record<SlotStatus, { symbol: string; label: string; className
   UNAVAILABLE: { symbol: "×", label: "予約不可", className: "text-zinc-300" },
 };
 
+/** 1ページ(1週間分)に表示する日数。21日間 ÷ 7 = ちょうど3ページになる。 */
+const DAYS_PER_PAGE = 7;
+
 /**
- * ステップ2: カレンダーUIで空き状況を3段階表示し、日時を選ぶ。
- * GET /api/public/availability を呼び、日付を選ぶと時間枠グリッドを表示する。
+ * ステップ2: 日付×時間のタイムテーブル形式で空き状況を3段階表示し、日時を選ぶ。
+ * GET /api/public/availability で21日分をまとめて取得し、日付を選ばなくても
+ * 一覧性高く空き時間を確認できるようにする(行=日付、列=時間、7日単位でページャー)。
  */
 export default function StepDateTime({
   place,
@@ -44,6 +48,7 @@ export default function StepDateTime({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | undefined>(date);
   const [selectedTime, setSelectedTime] = useState<string | undefined>(time);
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     let aborted = false;
@@ -64,6 +69,11 @@ export default function StepDateTime({
       .then((json) => {
         if (aborted) return;
         setData(json);
+        // 前ステップから戻ってきた際、既に選択済みの日付が含まれるページを開いた状態にする。
+        if (date) {
+          const idx = json.days.findIndex((d) => d.date === date);
+          if (idx >= 0) setPage(Math.floor(idx / DAYS_PER_PAGE));
+        }
       })
       .catch(() => {
         if (aborted) return;
@@ -75,16 +85,25 @@ export default function StepDateTime({
     return () => {
       aborted = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [place, typeId]);
 
+  const pageCount = data ? Math.max(1, Math.ceil(data.days.length / DAYS_PER_PAGE)) : 1;
+  const pageDays = useMemo(
+    () => data?.days.slice(page * DAYS_PER_PAGE, page * DAYS_PER_PAGE + DAYS_PER_PAGE) ?? [],
+    [data, page],
+  );
+  // 全日で同一の時間帯セットが返る前提(要件A章: 営業時間9:00-18:30固定)のため先頭日から列を作る。
+  const times = data?.days[0]?.slots.map((s) => s.time) ?? [];
   const selectedDay = useMemo(
     () => data?.days.find((d) => d.date === selectedDate),
     [data, selectedDate],
   );
 
-  function handleSelectDate(d: string) {
+  function handleSelect(d: string, t: string, status: SlotStatus) {
+    if (status === "UNAVAILABLE") return;
     setSelectedDate(d);
-    setSelectedTime(undefined);
+    setSelectedTime(t);
   }
 
   if (loading) {
@@ -102,6 +121,9 @@ export default function StepDateTime({
     );
   }
 
+  const firstDay = pageDays[0];
+  const lastDay = pageDays[pageDays.length - 1];
+
   return (
     <div className="space-y-6">
       {externalError && (
@@ -109,90 +131,108 @@ export default function StepDateTime({
       )}
 
       <div>
-        <h2 className="mb-1 text-lg font-semibold text-zinc-800">ご希望の日付を選択してください</h2>
-        <p className="text-xs text-zinc-500">本日から21日先までご予約いただけます(所要 約{data.durationMinutes}分)。</p>
+        <h2 className="mb-1 text-lg font-semibold text-zinc-800">ご希望の日時を選択してください</h2>
+        <p className="text-xs text-zinc-500">
+          本日から21日先までご予約いただけます(所要 約{data.durationMinutes}分)。表内の○/△をタップして日時をお選びください。
+        </p>
       </div>
 
       <Legend />
 
-      {/* 日付リスト */}
-      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-        {data.days.map((day) => {
-          const hasOpen = day.slots.some((s) => s.status !== "UNAVAILABLE");
-          const active = selectedDate === day.date;
-          const [, mm, dd] = day.date.split("-");
-          const isSunday = day.weekday === 0;
-          const isSaturday = day.weekday === 6;
-          return (
-            <button
-              key={day.date}
-              type="button"
-              onClick={() => handleSelectDate(day.date)}
-              aria-pressed={active}
-              className={`rounded-lg border px-2 py-2 text-center text-sm transition ${
-                active
-                  ? "border-emerald-600 bg-emerald-50 ring-2 ring-emerald-500"
-                  : "border-zinc-200 bg-white hover:border-emerald-400"
-              }`}
-            >
-              <span
-                className={`block font-medium ${
-                  day.isPublicHoliday || isSunday
-                    ? "text-red-500"
-                    : isSaturday
-                      ? "text-blue-500"
-                      : "text-zinc-800"
-                }`}
-              >
-                {Number(mm)}/{Number(dd)}（{WEEKDAY_LABELS[day.weekday]}）
-              </span>
-              <span className={`mt-1 block text-xs ${hasOpen ? "text-emerald-600" : "text-zinc-400"}`}>
-                {hasOpen ? "空きあり" : "満"}
-              </span>
-            </button>
-          );
-        })}
+      {selectedDay && selectedTime && (
+        <p className="rounded-lg bg-emerald-50 px-4 py-2 text-sm text-emerald-800">
+          選択中: {formatDateLabel(selectedDay.date, selectedDay.weekday)} {selectedTime}
+        </p>
+      )}
+
+      {/* 週送りページャー */}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          disabled={page === 0}
+          onClick={() => setPage((p) => Math.max(0, p - 1))}
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:bg-zinc-50"
+        >
+          ← 前の週
+        </button>
+        <span className="text-sm font-medium text-zinc-600">
+          {firstDay && lastDay ? `${rangeLabel(firstDay.date)} 〜 ${rangeLabel(lastDay.date)}` : ""}
+        </span>
+        <button
+          type="button"
+          disabled={page >= pageCount - 1}
+          onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition disabled:cursor-not-allowed disabled:opacity-40 enabled:hover:bg-zinc-50"
+        >
+          次の週 →
+        </button>
       </div>
 
-      {/* 時間枠グリッド */}
-      {selectedDay && (
-        <div>
-          <h3 className="mb-3 text-base font-semibold text-zinc-800">
-            {formatDateLabel(selectedDay.date, selectedDay.weekday)} の時間帯
-          </h3>
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-            {selectedDay.slots.map((slot) => {
-              const meta = STATUS_META[slot.status];
-              const disabled = slot.status === "UNAVAILABLE";
-              const active = selectedTime === slot.time;
+      {/* タイムテーブル(行=日付、列=時間) */}
+      <div className="overflow-x-auto rounded-lg border border-zinc-200">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="bg-zinc-50">
+              <th className="sticky left-0 z-10 bg-zinc-50 px-2 py-2 text-left font-medium text-zinc-500">
+                日付
+              </th>
+              {times.map((t) => (
+                <th key={t} className="whitespace-nowrap px-1.5 py-2 text-center font-medium text-zinc-500">
+                  {t}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pageDays.map((day) => {
+              const [, mm, dd] = day.date.split("-");
+              const isSunday = day.weekday === 0;
+              const isSaturday = day.weekday === 6;
               return (
-                <button
-                  key={slot.time}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => setSelectedTime(slot.time)}
-                  aria-pressed={active}
-                  className={`flex flex-col items-center rounded-lg border px-2 py-2 text-sm transition ${
-                    active
-                      ? "border-emerald-600 bg-emerald-50 ring-2 ring-emerald-500"
-                      : disabled
-                        ? "cursor-not-allowed border-zinc-100 bg-zinc-50"
-                        : "border-zinc-200 bg-white hover:border-emerald-400"
-                  }`}
-                >
-                  <span className={`font-medium ${disabled ? "text-zinc-300" : "text-zinc-800"}`}>
-                    {slot.time}
-                  </span>
-                  <span className={`text-base leading-none ${meta.className}`}>{meta.symbol}</span>
-                </button>
+                <tr key={day.date} className="border-t border-zinc-100">
+                  <th
+                    scope="row"
+                    className={`sticky left-0 z-10 whitespace-nowrap bg-white px-2 py-1.5 text-left font-medium ${
+                      day.isPublicHoliday || isSunday
+                        ? "text-red-500"
+                        : isSaturday
+                          ? "text-blue-500"
+                          : "text-zinc-800"
+                    }`}
+                  >
+                    {Number(mm)}/{Number(dd)}（{WEEKDAY_LABELS[day.weekday]}）
+                  </th>
+                  {day.slots.map((slot) => {
+                    const meta = STATUS_META[slot.status];
+                    const disabled = slot.status === "UNAVAILABLE";
+                    const active = selectedDate === day.date && selectedTime === slot.time;
+                    return (
+                      <td key={slot.time} className="p-0.5 text-center">
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => handleSelect(day.date, slot.time, slot.status)}
+                          aria-pressed={active}
+                          aria-label={`${Number(mm)}/${Number(dd)} ${slot.time} ${meta.label}`}
+                          className={`flex h-8 w-8 items-center justify-center rounded transition ${
+                            active
+                              ? "bg-emerald-100 ring-2 ring-emerald-500"
+                              : disabled
+                                ? "cursor-not-allowed"
+                                : "hover:bg-emerald-50"
+                          }`}
+                        >
+                          <span className={`text-base leading-none ${meta.className}`}>{meta.symbol}</span>
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
               );
             })}
-          </div>
-          {selectedDay.slots.every((s) => s.status === "UNAVAILABLE") && (
-            <p className="mt-3 text-sm text-zinc-500">この日に予約可能な時間帯はありません。別の日をお選びください。</p>
-          )}
-        </div>
-      )}
+          </tbody>
+        </table>
+      </div>
 
       <div className="flex items-center justify-between">
         <BackButton onClick={onBack} />
@@ -236,6 +276,12 @@ function BackButton({ onClick }: { onClick: () => void }) {
       戻る
     </button>
   );
+}
+
+/** ページャー見出し用の短い日付表記("7/15"等)。 */
+function rangeLabel(date: string): string {
+  const [, m, d] = date.split("-");
+  return `${Number(m)}/${Number(d)}`;
 }
 
 export function formatDateLabel(date: string, weekday: number): string {
