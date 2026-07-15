@@ -1,0 +1,239 @@
+// Prisma schema for ozaki-rsv-nextjs
+//
+// 設計判断の詳細な背景・根拠は docs/design/db-schema.md を参照。
+// 旧CakePHP実装(schema_ozdb.sql / RsvController.php / AdminController.php)の
+// 挙動を原典コードで確認した上でモデリングしている。
+//
+// 主な方針:
+// - 旧 `datetime: int(11)` (UNIXタイムスタンプ) はやめ、Postgresの DateTime/Date/Time 型を使う。
+// - 旧 `rsv_datetime.fix`(満枠フラグ)は廃止し、`count` と BusinessHour.reservationLimit の
+//   比較によって都度「満枠か」を判定する(旧実装のキャンセル時fix無条件解除バグを構造的に解消)。
+// - 拠点(日向/延岡)は Place マスタテーブルとして持たせる(enumにしない理由はdocs参照)。
+// - rsv_users の address / sex / memo は要件上未使用と確定しているため引き継がない。
+// - 管理画面ログイン用に AdminUser を新設(Auth.js Credentials Provider想定)。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// 拠点マスタ(旧: place=1 日向 / place=2 延岡 のハードコード値)
+// ---------------------------------------------------------------------------
+model Place {
+  id   Int    @id @default(autoincrement())
+  /// アプリケーションコードから安定的に参照するためのキー(例: "HYUGA" / "NOBEOKA")
+  code String @unique @db.VarChar(20)
+  /// 表示名(例: "日向", "延岡")
+  name String @db.VarChar(50)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  businessHours    BusinessHour[]
+  closures         Closure[]
+  reservationSlots ReservationSlot[]
+  reservations     Reservation[]
+
+  @@map("places")
+}
+
+// ---------------------------------------------------------------------------
+// 管理画面ログインユーザー(旧: users テーブル)
+// Auth.js (NextAuth v5) Credentials Provider から参照する想定。
+// Credentials + JWTセッション運用のみを想定し、NextAuthのDBアダプタ用テーブル
+// (Account/Session/VerificationToken)は現時点では設けない(docs参照)。
+// ---------------------------------------------------------------------------
+model AdminUser {
+  id           String    @id @default(cuid())
+  username     String    @unique @db.VarChar(50)
+  /// 旧schemaでは NULL 許容だったため踏襲。ユニーク制約はNULL同士では衝突しない(Postgres仕様)。
+  email        String?   @unique @db.VarChar(255)
+  /// 旧 `password` 列に相当。ハッシュ化済みパスワードのみを保持する(平文は保存しない)。
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  role         AdminRole
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_users")
+}
+
+/// 旧 users.role の inList(['admin','author']) 制約をDBレベルの型として表現。
+enum AdminRole {
+  ADMIN
+  AUTHOR
+
+  @@map("admin_role")
+}
+
+// ---------------------------------------------------------------------------
+// 曜日別営業設定(旧: rsv_inite)
+// week=7(祝日)は Weekday.PUBLIC_HOLIDAY として明示的にモデリングする。
+// ---------------------------------------------------------------------------
+model BusinessHour {
+  id      Int   @id @default(autoincrement())
+  placeId Int   @map("place_id")
+  place   Place @relation(fields: [placeId], references: [id], onDelete: Restrict)
+
+  weekday Weekday
+
+  /// 旧 `open` (tinyint) 相当。false の場合は終日休診。
+  isOpen Boolean @default(true) @map("is_open")
+
+  /// 旧 opentime/closetime/breaktime_op/breaktime_cl は "H:i" 文字列だったが、
+  /// 時刻のみを表す値なので Postgres の TIME 型で保持する。
+  openTime   DateTime? @map("open_time") @db.Time
+  closeTime  DateTime? @map("close_time") @db.Time
+  breakStart DateTime? @map("break_start") @db.Time
+  breakEnd   DateTime? @map("break_end") @db.Time
+
+  /// 旧 `rsvlimit`。この曜日区分における30分枠あたりの同時予約上限数。
+  /// 旧schemaはNULL許容だったが、可用性判定に必須の値のためNOT NULL化し、既定値0とする。
+  reservationLimit Int @default(0) @map("reservation_limit")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// 同一拠点・同一曜日区分の重複行を防止する(旧実装にはDB制約が無く、
+  /// 「初期設定」処理などで重複行が生まれ得た)。
+  @@unique([placeId, weekday])
+  @@map("business_hours")
+}
+
+/// 旧 rsv_inite.week (0=日曜〜6=土曜, 7=祝日) を明示的な列挙型にする。
+enum Weekday {
+  SUNDAY
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  /// 旧実装の week=7。祝日用の個別営業時間・予約上限を設定できる特別区分。
+  PUBLIC_HOLIDAY
+
+  @@map("weekday")
+}
+
+// ---------------------------------------------------------------------------
+// 祝日マスタ(旧: rsv_holiday)
+// 原典コード調査の結果、rsv_holiday には place 列が無く、拠点を問わず共有される
+// テーブルとして扱われていることを確認した(RsvController::get_rsv() 内で
+// `$this->RsvHoliday->find()` に place によるwhere句が無い)。
+// 「祝日として登録されている日付」自体は全拠点共通、
+// 「祝日を休診扱いにするか」は BusinessHour(weekday=PUBLIC_HOLIDAY)側で拠点別に設定する。
+// ---------------------------------------------------------------------------
+model PublicHoliday {
+  id   Int      @id @default(autoincrement())
+  /// 日付のみを表すため DATE 型を用いる(旧: rsv_holiday.datetime は日付0時のUNIX時刻)。
+  date DateTime @unique @db.Date
+  name String?  @db.VarChar(50)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("public_holidays")
+}
+
+// ---------------------------------------------------------------------------
+// 不定休(旧: rsv_fix)
+// 旧 start/end (UNIXタイムスタンプ) は「日付+時刻」の冗長な組み合わせだったため、
+// date(対象日) + startTime/endTime(時刻のみ、終日休診でない場合のみ使用) に分解する。
+// 旧 datetime 列(日付0時のUNIX時刻)は judgefix() のクエリでは実際には使われておらず、
+// 一覧表示用の付随情報に過ぎなかったため、date列に統合し独立カラムとしては廃止する。
+// ---------------------------------------------------------------------------
+model Closure {
+  id      Int   @id @default(autoincrement())
+  placeId Int   @map("place_id")
+  place   Place @relation(fields: [placeId], references: [id], onDelete: Restrict)
+
+  date     DateTime  @db.Date
+  /// 旧 `allday`。true の場合は startTime/endTime を無視して終日休診として扱う。
+  isAllDay Boolean   @default(false) @map("is_all_day")
+  startTime DateTime? @map("start_time") @db.Time
+  endTime   DateTime? @map("end_time") @db.Time
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([placeId, date])
+  @@map("closures")
+}
+
+// ---------------------------------------------------------------------------
+// 予約枠(旧: rsv_datetime)
+// 旧 `fix`(満枠フラグ)は廃止する。可否判定は都度
+// `count >= BusinessHour(該当曜日区分).reservationLimit` で行う。
+// これにより「キャンセル時にfixを無条件でfalseに戻す」旧実装のバグ
+// (他の予約がまだ使用中でも満枠状態が解除されてしまう)が構造的に発生しなくなる。
+//
+// count は「実際にこの30分枠を占有している予約数」の生カウンタ。
+// 増減は必ずトランザクション内で行い、予約確定時は対象スロット群をまとめて
+// upsert + 行ロック(SELECT ... FOR UPDATE 相当)した上で
+// reservationLimit 超過チェック→count+1、キャンセル時は同じスロット範囲を
+// Reservation.startAt/endAt から再計算してcount-1する(docs参照)。
+// ---------------------------------------------------------------------------
+model ReservationSlot {
+  id      Int   @id @default(autoincrement())
+  placeId Int   @map("place_id")
+  place   Place @relation(fields: [placeId], references: [id], onDelete: Restrict)
+
+  /// この30分枠の開始時刻(30分刻みに正規化された値のみが入る想定)。
+  startAt DateTime @map("start_at") @db.Timestamptz(6)
+
+  /// この枠を占有中の予約数。旧 `count` 相当。負値にならないことをアプリ側で保証する
+  /// (推奨: マイグレーションで `CHECK (count >= 0)` を追加する。docs参照)。
+  count Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// 同一拠点・同一日時の枠は一意(旧実装にはこの制約が無く、
+  /// 同時アクセス時に重複行が作られ得るリスクがあった)。
+  @@unique([placeId, startAt])
+  @@map("reservation_slots")
+}
+
+// ---------------------------------------------------------------------------
+// 予約者(旧: rsv_users)
+// address / sex / memo は要件確定により引き継がない。
+// datetime_id(先頭スロットのみを指すFK)や type(クライアント送信の自由文字列)は
+// startAt/endAt と typeId から導出可能なため廃止する(docs参照)。
+// ---------------------------------------------------------------------------
+model Reservation {
+  id      Int   @id @default(autoincrement())
+  placeId Int   @map("place_id")
+  place   Place @relation(fields: [placeId], references: [id], onDelete: Restrict)
+
+  /// 来店経験(0/1/2)。所要時間との対応はアプリケーション定数として管理する
+  /// (typeid: 0=はじめて/未来店=90分, 1=今月はじめて=60分, 2=今月来店済み=30分)。
+  typeId Int @map("type_id")
+
+  /// 予約確定時点の所要時間(分)のスナップショット。typeId⇔所要時間の対応が
+  /// 将来変更されても過去予約の表示・スロット解放計算が変わらないよう保持する。
+  durationMinutes Int @map("duration_minutes")
+
+  /// 予約開始時刻・終了時刻(endAt = startAt + durationMinutes は導出可能な冗長値だが、
+  /// 範囲検索(占有スロット判定・管理画面の日次一覧)を単純化するために非正規化して保持する)。
+  startAt DateTime @map("start_at") @db.Timestamptz(6)
+  endAt   DateTime @map("end_at") @db.Timestamptz(6)
+
+  name  String  @db.VarChar(255)
+  /// 旧 furikana。フロントはひらがな/カタカナのみ許容するバリデーションを行っているが、
+  /// DB制約としては課さずアプリ層(Zod等)で検証する。
+  kana  String? @db.VarChar(255)
+  tel   String? @db.VarChar(50)
+  email String  @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// 管理画面の「対象日の予約一覧」表示(拠点別・日付範囲)で使用する。
+  @@index([placeId, startAt])
+  @@map("reservations")
+}
