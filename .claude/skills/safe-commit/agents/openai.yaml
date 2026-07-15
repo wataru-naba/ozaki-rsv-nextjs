@@ -1,0 +1,3 @@
+interface:
+  display_name: "Safe Commit"
+  short_description: "Block commits that do not match the current branch"
