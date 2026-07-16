@@ -1,2 +1,53 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# OS / editor
 .DS_Store
+*.pem
+
+# Claude local settings
 .claude/settings.local.json
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files: ignore all local env files but keep the committed example
+.env
+.env.*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Override overly broad rules in ~/.gitignore_global (leftover from the
+# legacy CakePHP project) that would otherwise silently exclude files
+# essential to this repo: Next.js App Router route files, and Prisma
+# migration SQL.
+!page.tsx
+!prisma/migrations/**/*.sql
