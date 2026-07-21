@@ -1,4 +1,8 @@
-import type { PlaceCode, TypeId } from "@/lib/reservation/publicTypes";
+import type {
+  PlaceCode,
+  TypeId,
+  CreateReservationResponse,
+} from "@/lib/reservation/publicTypes";
 
 /**
  * 予約ウィザードの下書き状態と、その sessionStorage 永続化ヘルパー。
@@ -28,6 +32,7 @@ export type ReservationDraft = {
 };
 
 const DRAFT_KEY = "ozaki-reserve:draft";
+const RESULT_KEY = "ozaki-reserve:result";
 
 export function loadDraft(): ReservationDraft {
   if (typeof window === "undefined") return {};
@@ -51,6 +56,37 @@ export function saveDraft(draft: ReservationDraft): void {
 export function clearDraft(): void {
   if (typeof window === "undefined") return;
   window.sessionStorage.removeItem(DRAFT_KEY);
+}
+
+/**
+ * 完了画面へ引き継ぐ予約結果の保存/取得/クリア(US-003)。
+ *
+ * 完了画面(/reserve/complete)はウィザードとは別ルートのため、確定 API の結果は
+ * sessionStorage 経由で受け渡す。完了画面側は読み取り後に必ず clearResult() し、
+ * リロードでの二重表示や個人情報の残留を避ける(CompleteView 参照)。
+ */
+export function saveResult(result: CreateReservationResponse): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(RESULT_KEY, JSON.stringify(result));
+  } catch {
+    // 保存に失敗しても致命的ではないため握りつぶす(容量超過・プライベートモード等)
+  }
+}
+
+export function loadResult(): CreateReservationResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(RESULT_KEY);
+    return raw ? (JSON.parse(raw) as CreateReservationResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearResult(): void {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(RESULT_KEY);
 }
 
 /**

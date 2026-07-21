@@ -77,4 +77,40 @@ export type AvailabilityResponse = {
   }>;
 };
 
+/**
+ * POST /api/public/reservations の成功レスポンス型(api-design.md 2.3節 / US-003)。
+ *
+ * 予約確定 API の 201 応答。ウィザード(ReserveWizard)が受け取り、
+ * sessionStorage 経由で完了画面(/reserve/complete)へ引き継ぐ。
+ */
+export type CreateReservationResponse = {
+  reservationId: number;
+  place: PlaceCode;
+  typeId: number;
+  durationMinutes: number;
+  startAt: string; // ISO
+  endAt: string; // ISO
+};
+
+/**
+ * 公開APIの共通エラーレスポンス型(api-design.md 2.1節 / US-003)。
+ *
+ * サーバー側(lib/api/errors.ts)にも同一構造の型があるが、そちらは next/server 依存の
+ * サーバーモジュールに属する。予約フロー UI(クライアントコンポーネント)がエラー分岐に
+ * 使うため、依存の無い本ファイルで同型を宣言し安全に import できるようにする。
+ */
+export type ApiErrorResponse = {
+  error: {
+    code:
+      | "VALIDATION_ERROR"
+      | "SLOT_UNAVAILABLE"
+      | "RATE_LIMITED"
+      | "NOT_FOUND"
+      | "INTERNAL_ERROR";
+    message: string;
+    reason?: string;
+    fieldErrors?: Record<string, string[]>;
+  };
+};
+
 export const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
