@@ -87,7 +87,7 @@ const transactionImpl = async (
   return cb(tx);
 };
 
-const reservationFindUnique = vi.fn(async (..._a: unknown[]) => state.reservation);
+const reservationFindUnique = vi.fn(async () => state.reservation);
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     reservation: { findUnique: (...a: unknown[]) => reservationFindUnique(...a) },
