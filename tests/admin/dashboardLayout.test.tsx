@@ -56,6 +56,19 @@ describe("DashboardLayout: 認証ガード", () => {
     expect(screen.getByText("staff")).toBeInTheDocument();
   });
 
+  it("ヘッダーに主要ナビ(予約一覧・予約枠管理・祝日管理)を描画する", async () => {
+    requireAdminSession.mockResolvedValue({ id: "u1", username: "staff" });
+
+    const ui = await DashboardLayout({ children: <p>protected content</p> });
+    render(ui);
+
+    // US-010: 祝日管理への導線が追加されていること。
+    const holidayLink = screen.getByRole("link", { name: "祝日管理" });
+    expect(holidayLink).toHaveAttribute("href", "/admin/holidays");
+    expect(screen.getByRole("link", { name: "予約一覧" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "予約枠管理" })).toBeInTheDocument();
+  });
+
   it("未認証なら UnauthorizedError を throw し、レイアウトを構築しない", async () => {
     requireAdminSession.mockImplementation(() => {
       throw new UnauthorizedError();

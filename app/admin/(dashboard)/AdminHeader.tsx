@@ -15,6 +15,9 @@ export function AdminHeader({ username }: { username?: string }) {
             <Link href="/admin/slots" className="text-zinc-600 hover:text-zinc-900">
               予約枠管理
             </Link>
+            <Link href="/admin/holidays" className="text-zinc-600 hover:text-zinc-900">
+              祝日管理
+            </Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">

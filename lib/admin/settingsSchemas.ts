@@ -94,3 +94,18 @@ export const CreateClosureSchema = z
   });
 
 export type CreateClosureInput = z.infer<typeof CreateClosureSchema>;
+
+/**
+ * 祝日(PublicHoliday)個別追加(api-design.md 5.5 節)。
+ *
+ * - date は必須("YYYY-MM-DD")。PublicHoliday.date は @unique(拠点非依存=全拠点共有)のため、
+ *   重複登録は Server Action 側で専用コード DUPLICATE_DATE として扱う(スキーマの関心事ではない)。
+ * - name は任意・50文字以内(空文字は未指定と同義に正規化する)。
+ * - 拠点非依存のため placeId を持たない(US-010: 拠点セレクタを設けない)。
+ */
+export const CreatePublicHolidaySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日付は YYYY-MM-DD 形式で指定してください"),
+  name: z.string().max(50, "名称は50文字以内で入力してください").optional(),
+});
+
+export type CreatePublicHolidayInput = z.infer<typeof CreatePublicHolidaySchema>;

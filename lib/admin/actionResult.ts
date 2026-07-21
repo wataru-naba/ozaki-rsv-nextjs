@@ -9,7 +9,9 @@ export type ActionErrorCode =
   | "VALIDATION_ERROR"
   | "NOT_FOUND"
   | "UNAUTHORIZED"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  // 祝日の日付重複(PublicHoliday.date は @unique)専用コード(api-design.md 5.5 節)。
+  | "DUPLICATE_DATE";
 
 export type ActionResult<T> =
   | { ok: true; data: T }
