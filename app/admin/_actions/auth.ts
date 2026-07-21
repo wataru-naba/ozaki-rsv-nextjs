@@ -19,10 +19,11 @@ export async function loginAction(
   const password = String(formData.get("password") ?? "");
   const callbackUrlRaw = String(formData.get("callbackUrl") ?? "");
   // オープンリダイレクト防止: /admin 配下の相対パスのみ許可する。
+  // 既定のリダイレクト先は予約一覧(US-006 でダッシュボードを実装したため /admin/reservations)。
   const redirectTo =
     callbackUrlRaw.startsWith("/admin") && !callbackUrlRaw.startsWith("/admin/login")
       ? callbackUrlRaw
-      : "/admin";
+      : "/admin/reservations";
 
   if (!username || !password) {
     return { error: "ユーザー名とパスワードを入力してください。" };

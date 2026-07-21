@@ -81,7 +81,7 @@ describe("loginAction", () => {
     });
   });
 
-  it("外部 URL の callbackUrl は無視し /admin へリダイレクトする(オープンリダイレクト防止)", async () => {
+  it("外部 URL の callbackUrl は無視し /admin/reservations へリダイレクトする(オープンリダイレクト防止)", async () => {
     signIn.mockRejectedValue(redirectError());
 
     await expect(
@@ -93,11 +93,11 @@ describe("loginAction", () => {
 
     expect(signIn).toHaveBeenCalledWith(
       "credentials",
-      expect.objectContaining({ redirectTo: "/admin" }),
+      expect.objectContaining({ redirectTo: "/admin/reservations" }),
     );
   });
 
-  it("callbackUrl が /admin/login の場合はループ防止のため /admin へ", async () => {
+  it("callbackUrl が /admin/login の場合はループ防止のため /admin/reservations へ", async () => {
     signIn.mockRejectedValue(redirectError());
 
     await expect(
@@ -109,7 +109,7 @@ describe("loginAction", () => {
 
     expect(signIn).toHaveBeenCalledWith(
       "credentials",
-      expect.objectContaining({ redirectTo: "/admin" }),
+      expect.objectContaining({ redirectTo: "/admin/reservations" }),
     );
   });
 });

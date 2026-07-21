@@ -12,7 +12,7 @@ export default async function LoginPage({
 }) {
   const params = await searchParams;
   const raw = params.callbackUrl;
-  const callbackUrl = typeof raw === "string" ? raw : "/admin";
+  const callbackUrl = typeof raw === "string" ? raw : "/admin/reservations";
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-zinc-100 px-4">
