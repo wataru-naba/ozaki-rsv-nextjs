@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { UpdateBusinessHourSchema } from "@/lib/admin/settingsSchemas";
+import { UpdateBusinessHourSchema, CreateClosureSchema } from "@/lib/admin/settingsSchemas";
 
 /**
  * US-008 曜日別営業設定の入力バリデーション(api-design.md 5.3 節)。
@@ -157,5 +157,108 @@ describe("UpdateBusinessHourSchema: 予約上限のバリデーション", () =>
 describe("UpdateBusinessHourSchema: 時刻フォーマット", () => {
   it("HH:MM 以外の開始時刻は拒否", () => {
     expect(UpdateBusinessHourSchema.safeParse(base({ openTime: "9:00" })).success).toBe(false);
+  });
+});
+
+/**
+ * US-009 不定休(Closure)登録の入力バリデーション(api-design.md 5.4 節)。
+ *
+ * - 終日休診(isAllDay=true)は時刻未入力でも通る。
+ * - 時間帯休診(isAllDay=false)は開始・終了時刻が必須。
+ * - 終了時刻が開始時刻より前(または同一)は拒否。
+ * - 日付・時刻フォーマット不正は拒否。
+ */
+function closureBase(over: Partial<Record<string, unknown>> = {}) {
+  return {
+    placeId: 1,
+    date: "2026-08-01",
+    isAllDay: true,
+    ...over,
+  };
+}
+
+describe("CreateClosureSchema: 終日休診", () => {
+  it("終日休診(isAllDay=true)は時刻未入力でも通る", () => {
+    expect(CreateClosureSchema.safeParse(closureBase()).success).toBe(true);
+  });
+
+  it("終日休診なら時刻が入力されていても通る(時刻は無視される想定)", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: true, startTime: "10:00", endTime: "12:00" }),
+    );
+    expect(r.success).toBe(true);
+  });
+});
+
+describe("CreateClosureSchema: 時間帯休診の開始・終了必須", () => {
+  it("時間帯休診で開始・終了がそろっていれば通る", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: false, startTime: "10:00", endTime: "12:00" }),
+    );
+    expect(r.success).toBe(true);
+  });
+
+  it("時間帯休診で開始時刻が未入力なら拒否", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: false, startTime: undefined, endTime: "12:00" }),
+    );
+    expect(r.success).toBe(false);
+  });
+
+  it("時間帯休診で終了時刻が未入力なら拒否", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: false, startTime: "10:00", endTime: undefined }),
+    );
+    expect(r.success).toBe(false);
+  });
+
+  it("時間帯休診で開始・終了とも未入力なら拒否", () => {
+    const r = CreateClosureSchema.safeParse(closureBase({ isAllDay: false }));
+    expect(r.success).toBe(false);
+  });
+
+  it("開始・終了必須違反のエラーは startTime に紐づく", () => {
+    const r = CreateClosureSchema.safeParse(closureBase({ isAllDay: false }));
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const paths = r.error.issues.map((i) => i.path.join("."));
+      expect(paths).toContain("startTime");
+    }
+  });
+});
+
+describe("CreateClosureSchema: 開始・終了の範囲整合", () => {
+  it("終了時刻が開始時刻より前は拒否", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: false, startTime: "12:00", endTime: "10:00" }),
+    );
+    expect(r.success).toBe(false);
+  });
+
+  it("開始 == 終了は拒否", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: false, startTime: "10:00", endTime: "10:00" }),
+    );
+    expect(r.success).toBe(false);
+  });
+
+  it("開始 < 終了(正常)は通る", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: false, startTime: "10:00", endTime: "10:30" }),
+    );
+    expect(r.success).toBe(true);
+  });
+});
+
+describe("CreateClosureSchema: 日付・時刻フォーマット", () => {
+  it("YYYY-MM-DD 以外の日付は拒否", () => {
+    expect(CreateClosureSchema.safeParse(closureBase({ date: "2026/08/01" })).success).toBe(false);
+  });
+
+  it("HH:MM 以外の時刻は拒否", () => {
+    const r = CreateClosureSchema.safeParse(
+      closureBase({ isAllDay: false, startTime: "9:00", endTime: "12:00" }),
+    );
+    expect(r.success).toBe(false);
   });
 });
