@@ -5,16 +5,19 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAdminSession, UnauthorizedError } from "@/lib/auth/session";
 import { actionError, actionOk, type ActionResult } from "@/lib/admin/actionResult";
+import { dateStrToDateCol } from "@/lib/reservation/time";
 import {
+  CreateClosureSchema,
   UpdateBusinessHourSchema,
+  type CreateClosureInput,
   type UpdateBusinessHourInput,
 } from "@/lib/admin/settingsSchemas";
 
 /**
  * 管理画面の設定系 Server Action(api-design.md 5章)。
  *
- * 本 US(US-008)では基本設定(BusinessHour)の編集のみを実装する。
- * 不定休(Closure)登録・削除の Server Action は US-009 が本ファイルへ追記する前提。
+ * - 基本設定(BusinessHour)の編集: updateBusinessHour(US-008, 5.3 節)
+ * - 不定休(Closure)の登録・削除: createClosure / deleteClosure(US-009, 5.4 節)
  */
 
 /** "HH:MM" を @db.Time 用の Date(1970-01-01 UTC の時刻)に変換する。 */
@@ -90,5 +93,80 @@ export async function updateBusinessHour(
   } catch (e) {
     console.error("[updateBusinessHour] failed", { input: v, error: e });
     return actionError("INTERNAL_ERROR", "保存に失敗しました。時間をおいて再度お試しください。");
+  }
+}
+
+/**
+ * 不定休(Closure)登録(api-design.md 5.4 節)。
+ *
+ * - 終日休診(isAllDay=true)は時刻系を null にする。
+ * - 時間帯休診は開始・終了時刻が必須(CreateClosureSchema の refine で担保)。
+ */
+export async function createClosure(
+  input: CreateClosureInput,
+): Promise<ActionResult<{ id: number }>> {
+  try {
+    await requireAdminSession();
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return actionError("UNAUTHORIZED", e.message);
+    throw e;
+  }
+
+  const parsed = CreateClosureSchema.safeParse(input);
+  if (!parsed.success) {
+    return actionError("VALIDATION_ERROR", "入力内容に誤りがあります。", zodFieldErrors(parsed.error));
+  }
+  const v = parsed.data;
+
+  try {
+    const created = await prisma.closure.create({
+      data: {
+        placeId: v.placeId,
+        date: dateStrToDateCol(v.date),
+        isAllDay: v.isAllDay,
+        startTime: v.isAllDay || !v.startTime ? null : timeStrToTimeCol(v.startTime),
+        endTime: v.isAllDay || !v.endTime ? null : timeStrToTimeCol(v.endTime),
+      },
+    });
+    revalidatePath("/admin/slots");
+    return actionOk({ id: created.id });
+  } catch (e) {
+    console.error("[createClosure] failed", { input: v, error: e });
+    return actionError("INTERNAL_ERROR", "登録に失敗しました。時間をおいて再度お試しください。");
+  }
+}
+
+/**
+ * 不定休(Closure)削除(api-design.md 5.4 節)。
+ *
+ * 存在しない ID は NOT_FOUND。削除後は /admin/slots を revalidate する。
+ */
+export async function deleteClosure(
+  input: { closureId: number },
+): Promise<ActionResult<{ closureId: number }>> {
+  try {
+    await requireAdminSession();
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return actionError("UNAUTHORIZED", e.message);
+    throw e;
+  }
+
+  const { closureId } = input;
+  if (!Number.isInteger(closureId) || closureId <= 0) {
+    return actionError("VALIDATION_ERROR", "IDが不正です。");
+  }
+
+  const existing = await prisma.closure.findUnique({ where: { id: closureId } });
+  if (!existing) {
+    return actionError("NOT_FOUND", "対象の不定休が見つかりません。");
+  }
+
+  try {
+    await prisma.closure.delete({ where: { id: closureId } });
+    revalidatePath("/admin/slots");
+    return actionOk({ closureId });
+  } catch (e) {
+    console.error("[deleteClosure] failed", { closureId, error: e });
+    return actionError("INTERNAL_ERROR", "削除に失敗しました。時間をおいて再度お試しください。");
   }
 }

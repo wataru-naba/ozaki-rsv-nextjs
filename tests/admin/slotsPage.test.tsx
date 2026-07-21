@@ -3,14 +3,14 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 
 /**
- * US-008 予約枠管理ページ(基本設定=営業時間)の Server Component テスト。
+ * 予約枠管理ページ(/admin/slots)の Server Component テスト。
  *
  * 検証:
  * - AdminHeader の「予約枠管理」リンク先(/admin/slots)がページとして機能する。
- * - 拠点ごとに全曜日区分(DB 未登録は休診行で補完)を BusinessHourEditor へ渡す。
+ * - 拠点ごとに全曜日区分(DB 未登録は休診行で補完)を BusinessHourEditor へ渡す(US-008)。
  * - 拠点セレクタで拠点を切り替えられる。
  * - 認証ガード: 未認証ならデータ取得へ進まない。
- * - 本 US は基本設定のみ。不定休(Closure)セクション・ClosureManager は含めない(US-009 の範囲)。
+ * - 不定休(Closure)セクションを表示し、拠点別・日付昇順で ClosureManager へ渡す(US-009)。
  */
 
 const requireAdminSession = vi.fn();
@@ -26,7 +26,6 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     place: { findMany: (...a: unknown[]) => placeFindMany(...a) },
     businessHour: { findMany: (...a: unknown[]) => businessHourFindMany(...a) },
-    // closure は本 US では参照されない想定。呼ばれたら検知できるよう用意しておく。
     closure: { findMany: (...a: unknown[]) => closureFindMany(...a) },
   },
 }));
@@ -40,6 +39,22 @@ vi.mock("@/app/admin/(dashboard)/slots/BusinessHourEditor", () => ({
       data-place-id={p.placeId}
       data-weekdays={p.rows.map((r) => r.weekday).join(",")}
       data-open-flags={p.rows.map((r) => (r.isOpen ? "1" : "0")).join(",")}
+    />
+  ),
+}));
+
+// ClosureManager も client component。受け取った closures を data 属性で覗く。
+type ClosureManagerProps = {
+  placeId: number;
+  closures: Array<{ id: number; date: string; isAllDay: boolean }>;
+};
+vi.mock("@/app/admin/(dashboard)/slots/ClosureManager", () => ({
+  ClosureManager: (p: ClosureManagerProps) => (
+    <div
+      data-testid="closure-manager"
+      data-place-id={p.placeId}
+      data-dates={p.closures.map((c) => c.date).join(",")}
+      data-allday-flags={p.closures.map((c) => (c.isAllDay ? "1" : "0")).join(",")}
     />
   ),
 }));
@@ -60,6 +75,11 @@ const PLACES = [
 /** @db.Time 用の Date(1970-01-01 UTC の時刻)。 */
 function timeCol(h: number, m: number): Date {
   return new Date(Date.UTC(1970, 0, 1, h, m, 0));
+}
+
+/** @db.Date 用の Date(UTC 0時)。 */
+function dateCol(ymd: string): Date {
+  return new Date(`${ymd}T00:00:00.000Z`);
 }
 
 async function renderPage(params: Record<string, string>) {
@@ -114,11 +134,38 @@ describe("SlotsPage: 基本設定(営業時間)の表示", () => {
   });
 });
 
-describe("SlotsPage: 不定休(Closure)は本 US の範囲外(US-009)", () => {
-  it("不定休セクションの見出しを表示せず、closure の取得も行わない", async () => {
+describe("SlotsPage: 不定休(Closure)の表示(US-009)", () => {
+  it("不定休セクションの見出しと ClosureManager を表示する", async () => {
     await renderPage({ place: "HYUGA" });
-    expect(screen.queryByText(/不定休/)).not.toBeInTheDocument();
-    expect(closureFindMany).not.toHaveBeenCalled();
+    expect(screen.getByText(/不定休/)).toBeInTheDocument();
+    expect(screen.getByTestId("closure-manager")).toBeInTheDocument();
+  });
+
+  it("選択拠点の closure を日付昇順で取得し、選択拠点の id を ClosureManager へ渡す", async () => {
+    await renderPage({ place: "NOBEOKA" });
+    expect(closureFindMany).toHaveBeenCalledWith({
+      where: { placeId: 2 },
+      orderBy: { date: "asc" },
+    });
+    expect(screen.getByTestId("closure-manager").getAttribute("data-place-id")).toBe("2");
+  });
+
+  it("取得した不定休を日付・終日フラグとともに ClosureManager へ渡す", async () => {
+    closureFindMany.mockResolvedValue([
+      { id: 1, date: dateCol("2026-08-01"), isAllDay: true, startTime: null, endTime: null },
+      { id: 2, date: dateCol("2026-08-05"), isAllDay: false, startTime: timeCol(10, 0), endTime: timeCol(12, 0) },
+    ]);
+    await renderPage({ place: "HYUGA" });
+    const cm = screen.getByTestId("closure-manager");
+    expect(cm.getAttribute("data-dates")).toBe("2026-08-01,2026-08-05");
+    expect(cm.getAttribute("data-allday-flags")).toBe("1,0");
+  });
+
+  it("不定休が無い場合も ClosureManager を空リストで表示する", async () => {
+    closureFindMany.mockResolvedValue([]);
+    await renderPage({ place: "HYUGA" });
+    const cm = screen.getByTestId("closure-manager");
+    expect(cm.getAttribute("data-dates")).toBe("");
   });
 });
 

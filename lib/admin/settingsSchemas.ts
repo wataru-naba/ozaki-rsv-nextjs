@@ -7,8 +7,7 @@ import { z } from "zod";
  * スキーマ定義はこのモジュールに分離し、Action からは import して利用する。
  * これにより単体テストからもスキーマを直接検証できる。
  *
- * 不定休(Closure)関連スキーマは US-009 の範囲のため本 US では定義しない。
- * US-009 が本ファイルへ CreateClosureSchema 等を追記する前提とする。
+ * 不定休(Closure)関連スキーマ(CreateClosureSchema)は US-009 で追記する。
  */
 
 const TIME_RE = /^\d{2}:\d{2}$/;
@@ -70,3 +69,28 @@ export const UpdateBusinessHourSchema = z
   );
 
 export type UpdateBusinessHourInput = z.infer<typeof UpdateBusinessHourSchema>;
+
+/**
+ * 不定休(Closure)登録(api-design.md 5.4 節)。
+ *
+ * 終日休診(isAllDay=true)の場合は時刻不要。時間帯休診の場合は開始・終了時刻が必須で、
+ * 終了は開始より後でなければならない。
+ */
+export const CreateClosureSchema = z
+  .object({
+    placeId: z.number().int(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    isAllDay: z.boolean(),
+    startTime: z.string().regex(TIME_RE).optional(),
+    endTime: z.string().regex(TIME_RE).optional(),
+  })
+  .refine((v) => v.isAllDay || (v.startTime && v.endTime), {
+    message: "終日休診でない場合は開始・終了時刻が必須です",
+    path: ["startTime"],
+  })
+  .refine((v) => v.isAllDay || !v.startTime || !v.endTime || v.startTime < v.endTime, {
+    message: "終了時刻は開始時刻より後に設定してください",
+    path: ["endTime"],
+  });
+
+export type CreateClosureInput = z.infer<typeof CreateClosureSchema>;
