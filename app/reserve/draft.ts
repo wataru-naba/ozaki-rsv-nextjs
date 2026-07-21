@@ -80,3 +80,18 @@ export function applyConsultationSelection(
   }
   return { ...draft, place: selection.place, typeId: selection.typeId };
 }
+
+/**
+ * 日時選択(date/time)を下書きへ反映する純粋関数(US-002)。
+ *
+ * StepDateTime が選択した開始日("YYYY-MM-DD")と開始時刻("HH:MM")を下書きに載せ、
+ * 次ステップ(お客様情報入力=US-003)へ引き継げるようにする。
+ * 拠点・来店経験は変えないため、それらは保持する。副作用を持たない純粋関数として
+ * 切り出し、ウィザード本体(UI)から独立してテストできるようにしている。
+ */
+export function applyDateTimeSelection(
+  draft: ReservationDraft,
+  selection: { date: string; time: string },
+): ReservationDraft {
+  return { ...draft, date: selection.date, time: selection.time };
+}
