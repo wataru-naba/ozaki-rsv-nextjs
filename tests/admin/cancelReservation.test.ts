@@ -87,7 +87,12 @@ const transactionImpl = async (
   return cb(tx);
 };
 
-const reservationFindUnique = vi.fn(async () => state.reservation);
+// 呼び出しシグネチャを可変長引数で明示する。
+// vitest の型では実装のアリティがそのままモックの呼び出し型に反映されるため、
+// 引数無し実装のままだと呼び出し側の `reservationFindUnique(...a)` のスプレッドが型エラーになる。
+const reservationFindUnique = vi.fn<(...a: unknown[]) => Promise<typeof state.reservation>>(
+  async () => state.reservation,
+);
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     reservation: { findUnique: (...a: unknown[]) => reservationFindUnique(...a) },
