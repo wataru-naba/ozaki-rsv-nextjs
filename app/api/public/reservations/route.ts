@@ -4,6 +4,7 @@ import { CreateReservationSchema } from "@/lib/reservation/schemas";
 import { createReservation } from "@/lib/reservation/createReservation";
 import { TYPE_DURATION_MINUTES } from "@/lib/reservation/constants";
 import { jstDateStrToInstant, timeStrToMinutes } from "@/lib/reservation/time";
+import { sendReservationConfirmation } from "@/lib/mail/sendReservationConfirmation";
 
 /**
  * POST /api/public/reservations
@@ -14,7 +15,6 @@ import { jstDateStrToInstant, timeStrToMinutes } from "@/lib/reservation/time";
  *
  * スコープ外(本 US では持ち込まない):
  * - レート制限(8.2節): インメモリ実装は MVP 専用仮実装のため US-012(外部ストア化)で追加する。
- * - メール送信(7章 / C章): US-004 でコミット後に呼び出す。本 US では no-op(下記参照)。
  */
 export async function POST(req: NextRequest) {
   try {
@@ -36,9 +36,25 @@ export async function POST(req: NextRequest) {
 
     const result = await createReservation(input);
 
-    // メール送信(確認メール)は US-004 の範囲。ここでコミット後に呼び出すが、
-    // 本 US ではまだ実装しない(no-op)。実装時も失敗を 201 レスポンスへ影響させないこと(7.2節)。
-    // 例) await sendReservationConfirmation({ ...result, name, kana, tel, email });
+    // 予約確認メール送信(US-004 / 7章)。createReservation の $transaction は
+    // 既にコミット済みで、ここはトランザクションの **外** にあたる(DB ロック保持時間に影響しない)。
+    // 送信サービスは失敗しても throw しない契約だが、想定外の例外でも予約結果(201)を
+    // 損なわないよう防御的に握りつぶす(7.2節: メール失敗を予約失敗にしない)。
+    await sendReservationConfirmation({
+      reservationId: result.reservationId,
+      place: result.place,
+      name: input.name,
+      kana: input.kana,
+      tel: input.tel,
+      email: input.email,
+      startAt: result.startAt,
+      endAt: result.endAt,
+    }).catch((err) => {
+      console.error(
+        `[mail] 予約確認メール呼び出しで想定外エラー reservationId=${result.reservationId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
 
     return NextResponse.json(
       {
