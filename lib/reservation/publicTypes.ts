@@ -8,10 +8,9 @@
  * - typeId ⇔ 来店経験ラベル/所要時間: 要件ドキュメント 3-2節
  * - 拠点(HYUGA/NOBEOKA): 要件ドキュメント I章 / seed
  *
- * NOTE (US-001 スコープ): 本ブランチは「相談内容(拠点+来店経験)選択」までを対象とする。
- * 空き状況(AvailabilityResponse)・予約確定(CreateReservationResponse)・共通エラー型などの
- * API レイヤー型は US-002 / US-003 でこのファイルに追加する。ここでは US-001 が必要とする
- * 拠点・来店経験(typeId)の型/定数のみを定義する。
+ * NOTE (スコープ): US-001 は「相談内容(拠点+来店経験)選択」を、US-002 は空き状況閲覧を対象とする。
+ * 空き状況(AvailabilityResponse)は US-002 で追加。予約確定(CreateReservationResponse)・
+ * 共通エラー型などの API レイヤー型は US-003 でこのファイルに追加する。
  */
 
 export type PlaceCode = "HYUGA" | "NOBEOKA";
@@ -57,5 +56,25 @@ export function typeLabel(typeId: TypeId): string {
 export function typeDurationMinutes(typeId: TypeId): number {
   return TYPE_OPTIONS.find((t) => t.typeId === typeId)?.durationMinutes ?? 0;
 }
+
+/**
+ * GET /api/public/availability のレスポンス型(api-design.md 2.2節 / US-002)。
+ *
+ * サーバー側(lib/reservation/availability.ts)にも同一構造の型があるが、そちらは
+ * Prisma 依存のサーバーモジュールに属する。日時選択 UI(StepDateTime)はクライアント
+ * コンポーネントのため、Prisma 非依存の本ファイルで同型を宣言し安全に import できるようにする。
+ */
+export type AvailabilityResponse = {
+  place: PlaceCode;
+  typeId: number;
+  durationMinutes: number;
+  generatedAt: string; // ISO。ラストオーダー判定の基準時刻を明示
+  days: Array<{
+    date: string; // "2026-07-15"
+    weekday: number; // 0(日)〜6(土)
+    isPublicHoliday: boolean;
+    slots: Array<{ time: string; status: SlotStatus }>;
+  }>;
+};
 
 export const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
