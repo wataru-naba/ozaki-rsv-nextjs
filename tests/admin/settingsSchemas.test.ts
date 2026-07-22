@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { UpdateBusinessHourSchema, CreateClosureSchema } from "@/lib/admin/settingsSchemas";
+import {
+  UpdateBusinessHourSchema,
+  CreateClosureSchema,
+  CreatePublicHolidaySchema,
+} from "@/lib/admin/settingsSchemas";
 
 /**
  * US-008 曜日別営業設定の入力バリデーション(api-design.md 5.3 節)。
@@ -260,5 +264,65 @@ describe("CreateClosureSchema: 日付・時刻フォーマット", () => {
       closureBase({ isAllDay: false, startTime: "9:00", endTime: "12:00" }),
     );
     expect(r.success).toBe(false);
+  });
+});
+
+/**
+ * US-010 祝日(PublicHoliday)個別追加の入力バリデーション(api-design.md 5.5 節)。
+ *
+ * - date 必須("YYYY-MM-DD")。不正フォーマット・未指定は拒否。
+ * - name は任意・50文字以内。50文字ちょうどは許可、51文字は拒否。
+ * - 拠点非依存のため placeId を持たない(余分なキーがあっても Zod は無視するが、契約上は不要)。
+ */
+describe("CreatePublicHolidaySchema: 日付の必須・フォーマット", () => {
+  it("日付のみ(name 省略)で通る", () => {
+    expect(CreatePublicHolidaySchema.safeParse({ date: "2027-01-01" }).success).toBe(true);
+  });
+
+  it("日付未指定は拒否", () => {
+    expect(CreatePublicHolidaySchema.safeParse({ name: "元日" }).success).toBe(false);
+  });
+
+  it("YYYY-MM-DD 以外の日付は拒否", () => {
+    expect(CreatePublicHolidaySchema.safeParse({ date: "2027/01/01" }).success).toBe(false);
+  });
+
+  it("日付が空文字は拒否", () => {
+    expect(CreatePublicHolidaySchema.safeParse({ date: "" }).success).toBe(false);
+  });
+
+  it("フォーマット違反のエラーは date フィールドに紐づく", () => {
+    const r = CreatePublicHolidaySchema.safeParse({ date: "bad" });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const paths = r.error.issues.map((i) => i.path.join("."));
+      expect(paths).toContain("date");
+    }
+  });
+});
+
+describe("CreatePublicHolidaySchema: 名称(name)のバリデーション", () => {
+  it("name 付きで通る", () => {
+    const r = CreatePublicHolidaySchema.safeParse({ date: "2027-01-01", name: "元日" });
+    expect(r.success).toBe(true);
+  });
+
+  it("name 50文字ちょうどは許可(上限境界)", () => {
+    const r = CreatePublicHolidaySchema.safeParse({ date: "2027-01-01", name: "あ".repeat(50) });
+    expect(r.success).toBe(true);
+  });
+
+  it("name 51文字は拒否", () => {
+    const r = CreatePublicHolidaySchema.safeParse({ date: "2027-01-01", name: "あ".repeat(51) });
+    expect(r.success).toBe(false);
+  });
+
+  it("name 超過違反のエラーは name フィールドに紐づく", () => {
+    const r = CreatePublicHolidaySchema.safeParse({ date: "2027-01-01", name: "あ".repeat(51) });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const paths = r.error.issues.map((i) => i.path.join("."));
+      expect(paths).toContain("name");
+    }
   });
 });
