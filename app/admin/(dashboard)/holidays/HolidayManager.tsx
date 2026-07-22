@@ -1,8 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { createPublicHoliday, deletePublicHoliday } from "@/app/admin/_actions/settings";
+import {
+  createPublicHoliday,
+  deletePublicHoliday,
+  importPublicHolidaysCsv,
+} from "@/app/admin/_actions/settings";
 
 export type HolidayRow = {
   id: number;
@@ -16,12 +20,31 @@ export type HolidayRow = {
  * 祝日マスタは拠点非依存(全拠点共有)のため、拠点セレクタは設けない。
  * date は @unique のため、重複登録時は Server Action が DUPLICATE_DATE を返す。
  */
+/** CSV のデータ行数を概算する(ヘッダー行と空行を除外)。確認ダイアログの取込予定件数表示用。 */
+function estimateCsvRowCount(text: string): number {
+  const lines = text
+    .replace(/^﻿/, "")
+    .split(/\r\n|\r|\n/)
+    .filter((l) => l.trim() !== "");
+  if (lines.length === 0) return 0;
+  // 先頭行の 1 列目が日付でなければヘッダーとみなして除外する。
+  const firstCol = (lines[0].split(",")[0] ?? "").trim();
+  const hasHeader = !/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(firstCol);
+  return hasHeader ? lines.length - 1 : lines.length;
+}
+
 export function HolidayManager({ holidays }: { holidays: HolidayRow[] }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [date, setDate] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  // CSV 一括登録用の状態。
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvError, setCsvError] = useState<string[] | null>(null);
+  const [csvSuccess, setCsvSuccess] = useState<string | null>(null);
 
   function onCreate() {
     setError(null);
@@ -56,6 +79,46 @@ export function HolidayManager({ holidays }: { holidays: HolidayRow[] }) {
         router.refresh();
       } else {
         setError(result.error.message);
+      }
+    });
+  }
+
+  async function onImportCsv() {
+    setCsvError(null);
+    setCsvSuccess(null);
+    if (!csvFile) {
+      setCsvError(["CSV ファイルを選択してください。"]);
+      return;
+    }
+
+    // 破壊的操作(全削除→全置換)の実行前確認。現在件数と取込予定件数を提示する。
+    let plannedCount = 0;
+    try {
+      plannedCount = estimateCsvRowCount(await csvFile.text());
+    } catch {
+      plannedCount = 0;
+    }
+    const confirmed = window.confirm(
+      `既存の祝日 ${holidays.length} 件をすべて削除し、CSV の ${plannedCount} 件で置き換えます。\n` +
+        `この操作は取り消せません。よろしいですか?`,
+    );
+    if (!confirmed) return;
+
+    const formData = new FormData();
+    formData.append("file", csvFile);
+
+    startTransition(async () => {
+      const result = await importPublicHolidaysCsv(formData);
+      if (result.ok) {
+        setCsvSuccess(`${result.data.importedCount} 件の祝日を登録しました(既存データは置き換えました)。`);
+        setCsvFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        router.refresh();
+      } else {
+        const detail = result.error.fieldErrors
+          ? Object.values(result.error.fieldErrors).flat()
+          : [];
+        setCsvError([result.error.message, ...detail]);
       }
     });
   }
@@ -136,6 +199,47 @@ export function HolidayManager({ holidays }: { holidays: HolidayRow[] }) {
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* CSV 一括登録(全削除→再投入) */}
+      <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+        <h2 className="text-base font-semibold text-amber-900">CSV 一括登録</h2>
+        <p className="mt-1 text-sm text-amber-800">
+          内閣府「国民の祝日・休日」形式の CSV(ヘッダー行 + <code>YYYY/M/D,名称</code>)を取り込みます。
+          <strong className="font-semibold">
+            この操作は既存の祝日データをすべて削除し、CSV の内容で置き換えます。
+          </strong>
+          取り消しはできません。最新の CSV を使用してください。
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => {
+              setCsvError(null);
+              setCsvSuccess(null);
+              setCsvFile(e.target.files?.[0] ?? null);
+            }}
+            className="text-sm text-amber-900 file:mr-3 file:rounded-md file:border-0 file:bg-amber-200 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-amber-900 hover:file:bg-amber-300"
+          />
+          <button
+            type="button"
+            onClick={onImportCsv}
+            disabled={isPending || !csvFile}
+            className="rounded-md bg-amber-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-amber-800 disabled:opacity-60"
+          >
+            全削除して取り込む
+          </button>
+        </div>
+        {csvSuccess && <p className="mt-2 text-sm text-green-700">{csvSuccess}</p>}
+        {csvError && (
+          <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-red-600">
+            {csvError.map((msg, i) => (
+              <li key={i}>{msg}</li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );

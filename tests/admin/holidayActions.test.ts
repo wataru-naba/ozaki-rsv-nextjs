@@ -41,17 +41,27 @@ vi.mock("next/cache", () => ({
 const holidayCreate = vi.fn();
 const holidayFindUnique = vi.fn();
 const holidayDelete = vi.fn();
+const holidayDeleteMany = vi.fn();
+const holidayCreateMany = vi.fn();
+const prismaTransaction = vi.fn();
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     publicHoliday: {
       create: (...a: unknown[]) => holidayCreate(...a),
       findUnique: (...a: unknown[]) => holidayFindUnique(...a),
       delete: (...a: unknown[]) => holidayDelete(...a),
+      deleteMany: (...a: unknown[]) => holidayDeleteMany(...a),
+      createMany: (...a: unknown[]) => holidayCreateMany(...a),
     },
+    $transaction: (...a: unknown[]) => prismaTransaction(...a),
   },
 }));
 
-import { createPublicHoliday, deletePublicHoliday } from "@/app/admin/_actions/settings";
+import {
+  createPublicHoliday,
+  deletePublicHoliday,
+  importPublicHolidaysCsv,
+} from "@/app/admin/_actions/settings";
 
 type CreateArg = { data: Record<string, unknown> };
 
@@ -79,6 +89,10 @@ beforeEach(() => {
   holidayCreate.mockResolvedValue({ id: 100 });
   holidayFindUnique.mockResolvedValue({ id: 5 });
   holidayDelete.mockResolvedValue({ id: 5 });
+  // deleteMany/createMany は PrismaPromise 相当。$transaction はそれらを受けて解決する。
+  holidayDeleteMany.mockResolvedValue({ count: 3 });
+  holidayCreateMany.mockResolvedValue({ count: 0 });
+  prismaTransaction.mockImplementation((ops: Promise<unknown>[]) => Promise.all(ops));
 });
 
 describe("createPublicHoliday — 登録正常系", () => {
@@ -243,5 +257,163 @@ describe("deletePublicHoliday — 認可", () => {
     if (!result.ok) expect(result.error.code).toBe("UNAUTHORIZED");
     expect(holidayFindUnique).not.toHaveBeenCalled();
     expect(holidayDelete).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * US-010 追加 / ADR 0002: importPublicHolidaysCsv(CSV 一括登録=全削除→再投入)。
+ *
+ * データ整合性が必須テスト対象:
+ * - 正常系: 全削除→全件挿入を単一トランザクション($transaction([deleteMany, createMany]))で実行。
+ * - 不正行が 1 件でもあれば DB を一切変更しない(deleteMany も createMany も呼ばれない)。
+ * - createMany 失敗($transaction reject)時はロールバックされ、INTERNAL_ERROR を返し revalidate しない。
+ * - サイズ上限・空ファイル拒否。
+ * - 未認証は UNAUTHORIZED。
+ */
+
+const HEADER = "国民の祝日・休日月日,国民の祝日・休日名称";
+
+/** テスト用 CSV File を生成する(実ファイルは同梱しない。同形式の小規模サンプルを用いる)。 */
+function csvFile(content: string, name = "holidays.csv"): File {
+  return new File([content], name, { type: "text/csv" });
+}
+
+/** 指定バイト数の File を生成する(サイズ上限テスト用。中身の妥当性は問わない)。 */
+function oversizedFile(bytes: number): File {
+  return new File(["a".repeat(bytes)], "big.csv", { type: "text/csv" });
+}
+
+function formDataWith(file: File | null): FormData {
+  const fd = new FormData();
+  if (file) fd.append("file", file);
+  return fd;
+}
+
+/** @db.Date 用 Date から "YYYY-MM-DD"(UTC)を得る。 */
+function ymd(v: unknown): string {
+  const d = v as Date;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate(),
+  ).padStart(2, "0")}`;
+}
+
+describe("importPublicHolidaysCsv — 正常系(全削除→全件挿入)", () => {
+  it("検証済み CSV を単一トランザクションで全置換し、importedCount を返す", async () => {
+    const fd = formDataWith(
+      csvFile([HEADER, "2026/1/1,元日", "2026/2/11,建国記念の日"].join("\r\n")),
+    );
+
+    const result = await importPublicHolidaysCsv(fd);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.importedCount).toBe(2);
+
+    // 全削除→全件挿入が「1 つの」$transaction 呼び出しにまとめられていること。
+    expect(prismaTransaction).toHaveBeenCalledTimes(1);
+    const ops = prismaTransaction.mock.calls[0][0] as unknown[];
+    expect(Array.isArray(ops)).toBe(true);
+    expect(ops).toHaveLength(2);
+
+    // deleteMany は全件対象(空 where)、createMany は正規化済みデータ。
+    expect(holidayDeleteMany).toHaveBeenCalledWith({});
+    expect(holidayCreateMany).toHaveBeenCalledTimes(1);
+    const createArg = holidayCreateMany.mock.calls[0][0] as { data: Array<{ date: unknown; name: string | null }> };
+    expect(createArg.data.map((r) => ymd(r.date))).toEqual(["2026-01-01", "2026-02-11"]);
+    expect(createArg.data.map((r) => r.name)).toEqual(["元日", "建国記念の日"]);
+
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/holidays");
+  });
+
+  it("ヘッダー無し・BOM 付き・LF でも取り込める", async () => {
+    const fd = formDataWith(csvFile("﻿2026/5/3,憲法記念日\n2026/5/4,みどりの日"));
+    const result = await importPublicHolidaysCsv(fd);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.importedCount).toBe(2);
+  });
+});
+
+describe("importPublicHolidaysCsv — 不正 CSV は DB を一切変更しない", () => {
+  it("不正行が 1 件でもあれば deleteMany/createMany/$transaction を呼ばず VALIDATION_ERROR", async () => {
+    const fd = formDataWith(
+      csvFile([HEADER, "2026/1/1,元日", "2026/2/30,存在しない日"].join("\n")),
+    );
+
+    const result = await importPublicHolidaysCsv(fd);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION_ERROR");
+      // 不正行の詳細(行番号 + 理由)を fieldErrors に載せる。
+      expect(result.error.fieldErrors).toBeTruthy();
+    }
+    expect(prismaTransaction).not.toHaveBeenCalled();
+    expect(holidayDeleteMany).not.toHaveBeenCalled();
+    expect(holidayCreateMany).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("空ファイル(サイズ 0)は VALIDATION_ERROR で DB を触らない", async () => {
+    const result = await importPublicHolidaysCsv(formDataWith(csvFile("")));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION_ERROR");
+    expect(prismaTransaction).not.toHaveBeenCalled();
+    expect(holidayDeleteMany).not.toHaveBeenCalled();
+  });
+
+  it("データ行が無い(ヘッダーのみ)CSV は VALIDATION_ERROR で DB を触らない", async () => {
+    const result = await importPublicHolidaysCsv(formDataWith(csvFile(HEADER)));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION_ERROR");
+    expect(holidayDeleteMany).not.toHaveBeenCalled();
+  });
+
+  it("file が無い FormData は VALIDATION_ERROR", async () => {
+    const result = await importPublicHolidaysCsv(formDataWith(null));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION_ERROR");
+    expect(prismaTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("importPublicHolidaysCsv — トランザクションのロールバック", () => {
+  it("createMany 失敗($transaction reject)なら INTERNAL_ERROR を返し revalidate しない", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // createMany が失敗 → Promise.all(=$transaction) が reject → 全体ロールバック。
+    holidayCreateMany.mockRejectedValue(new Error("createMany failed"));
+
+    const fd = formDataWith(csvFile([HEADER, "2026/1/1,元日"].join("\n")));
+    const result = await importPublicHolidaysCsv(fd);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL_ERROR");
+    // 全削除と全件挿入は 1 トランザクションに束ねられているため、失敗時は削除も無効化される。
+    expect(prismaTransaction).toHaveBeenCalledTimes(1);
+    expect(revalidatePath).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+});
+
+describe("importPublicHolidaysCsv — 上限・防御", () => {
+  it("1MB を超えるファイルは VALIDATION_ERROR で DB を触らない", async () => {
+    const result = await importPublicHolidaysCsv(formDataWith(oversizedFile(1024 * 1024 + 1)));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION_ERROR");
+    expect(prismaTransaction).not.toHaveBeenCalled();
+    expect(holidayDeleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("importPublicHolidaysCsv — 認可", () => {
+  it("未認証なら UNAUTHORIZED を返し DB へ触れない", async () => {
+    requireAdminSession.mockRejectedValue(new UnauthorizedErrorMock());
+
+    const fd = formDataWith(csvFile([HEADER, "2026/1/1,元日"].join("\n")));
+    const result = await importPublicHolidaysCsv(fd);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("UNAUTHORIZED");
+    expect(prismaTransaction).not.toHaveBeenCalled();
+    expect(holidayDeleteMany).not.toHaveBeenCalled();
+    expect(holidayCreateMany).not.toHaveBeenCalled();
   });
 });

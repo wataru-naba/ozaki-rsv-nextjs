@@ -14,6 +14,7 @@ import {
   type CreatePublicHolidayInput,
   type UpdateBusinessHourInput,
 } from "@/lib/admin/settingsSchemas";
+import { parseHolidayCsv, DEFAULT_MAX_ROWS } from "@/lib/admin/parseHolidayCsv";
 
 /**
  * 管理画面の設定系 Server Action(api-design.md 5章)。
@@ -260,5 +261,86 @@ export async function deletePublicHoliday(
   } catch (e) {
     console.error("[deletePublicHoliday] failed", { holidayId, error: e });
     return actionError("INTERNAL_ERROR", "削除に失敗しました。時間をおいて再度お試しください。");
+  }
+}
+
+/** CSV 一括登録のファイルサイズ上限(1MB)。ADR 0002 §5。 */
+const HOLIDAY_CSV_MAX_BYTES = 1024 * 1024;
+/** エラー表示時に message へ列挙する不正行の最大件数(残りは件数のみ集約)。 */
+const HOLIDAY_CSV_MAX_ISSUES_IN_MESSAGE = 20;
+
+/**
+ * 祝日(PublicHoliday)の CSV 一括登録(全削除→再投入)。US-010 追加 / ADR 0002 / api-design.md 5.5.1。
+ *
+ * 挙動: 既存の祝日データを全削除し、CSV の内容で置き換える(全置換)。破壊的操作のため、
+ * パース・検証を完全に終えてからトランザクションに入る。1 件でも不正なら DB を一切変更しない。
+ *
+ * - formData.get("file") が CSV File。requireAdminSession() を先頭で必須実行。
+ * - サイズ上限 1MB / 行数上限 10,000 行 / 空ファイル・データ 0 件は VALIDATION_ERROR。
+ * - $transaction([deleteMany, createMany]) で全削除→全件挿入を単一トランザクションで実行。
+ *   createMany 失敗時は deleteMany もロールバックされ、既存データは保持される。
+ * - 成功後に revalidatePath("/admin/holidays")。
+ */
+export async function importPublicHolidaysCsv(
+  formData: FormData,
+): Promise<ActionResult<{ importedCount: number }>> {
+  try {
+    await requireAdminSession();
+  } catch (e) {
+    if (e instanceof UnauthorizedError) return actionError("UNAUTHORIZED", e.message);
+    throw e;
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return actionError("VALIDATION_ERROR", "CSV ファイルを選択してください。");
+  }
+  if (file.size > HOLIDAY_CSV_MAX_BYTES) {
+    return actionError(
+      "VALIDATION_ERROR",
+      "ファイルサイズが上限(1MB)を超えています。正しい祝日 CSV を選択してください。",
+    );
+  }
+
+  let text: string;
+  try {
+    text = await file.text();
+  } catch (e) {
+    console.error("[importPublicHolidaysCsv] file read failed", { error: e });
+    return actionError("INTERNAL_ERROR", "ファイルの読み込みに失敗しました。");
+  }
+
+  // 破壊(全削除)の前に全行検証する。1 件でも不正なら DB に一切触れない。
+  const parsed = parseHolidayCsv(text, { maxRows: DEFAULT_MAX_ROWS });
+  if (!parsed.ok) {
+    const shown = parsed.issues.slice(0, HOLIDAY_CSV_MAX_ISSUES_IN_MESSAGE);
+    const lines = shown.map((i) => (i.line > 0 ? `${i.line}行目: ${i.reason}` : i.reason));
+    const rest = parsed.issues.length - shown.length;
+    const message =
+      `CSV の内容に誤りがあります。取込は行われていません。` +
+      (rest > 0 ? `(不正 ${parsed.issues.length} 件のうち先頭 ${shown.length} 件を表示)` : "");
+    return actionError("VALIDATION_ERROR", message, { file: lines });
+  }
+
+  // Prisma のカラム型(@db.Date)へ変換した投入データ。
+  const rows = parsed.rows.map((r) => ({ date: dateStrToDateCol(r.date), name: r.name }));
+
+  try {
+    // 全削除→全件挿入を単一トランザクションで実行(原子性: createMany 失敗なら delete もロールバック)。
+    await prisma.$transaction([
+      prisma.publicHoliday.deleteMany({}),
+      prisma.publicHoliday.createMany({ data: rows }),
+    ]);
+    revalidatePath("/admin/holidays");
+    return actionOk({ importedCount: rows.length });
+  } catch (e) {
+    console.error("[importPublicHolidaysCsv] transaction failed", {
+      rowCount: rows.length,
+      error: e,
+    });
+    return actionError(
+      "INTERNAL_ERROR",
+      "取込に失敗しました。既存の祝日データは保持されています。時間をおいて再度お試しください。",
+    );
   }
 }
